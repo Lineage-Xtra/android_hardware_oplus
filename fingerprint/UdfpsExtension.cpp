@@ -34,6 +34,14 @@ uint32_t getUdfpsZOrder(uint32_t z, bool touched) {
 #endif
 }
 
-uint64_t getUdfpsUsageBits(uint64_t usageBits, bool /*touched*/) {
+uint64_t getUdfpsUsageBits(uint64_t usageBits, bool touched) {
+    /* * Strip the usage bits if the sensor is not actively being touched.
+     * This prevents SurfaceFlinger from passing the HBM_ENABLE flag
+     * to the display HAL when the device wakes up or idles.
+     */
+    if (!touched) {
+        return 0;
+    }
+
     return usageBits;
 }
