@@ -4,6 +4,30 @@ hidl_package_root {
 }
 
 aidl_interface {
+    name: "vendor.oplus.hardware.a2dp_offload",
+    vendor_available: true,
+    local_include_dir: "aidl",
+    srcs: ["aidl/vendor/oplus/hardware/a2dp_offload/*.aidl"],
+    stability: "vintf",
+    owner: "oplus",
+
+    backend: {
+        cpp: {
+            enabled: true,
+        },
+        java: {
+            enabled: false,
+        },
+    },
+    versions_with_info: [
+        {
+            version: "1",
+            imports: [],
+        },
+    ],
+}
+
+aidl_interface {
     name: "vendor.oplus.hardware.appradioaidl",
     system_ext_specific: true,
     vendor_available: true,
@@ -217,6 +241,10 @@ aidl_interface {
         },
         {
             version: "11",
+            imports: [],
+        },
+        {
+            version: "12",
             imports: [],
         },
     ],
@@ -471,6 +499,32 @@ aidl_interface {
 }
 
 aidl_interface {
+    name: "vendor.oplus.hardware.olck_ca",
+    system_ext_specific: true,
+    odm_available: true,
+    local_include_dir: "aidl",
+    srcs: ["aidl/vendor/oplus/hardware/olck_ca/*.aidl"],
+    stability: "vintf",
+    owner: "oplus",
+
+    backend: {
+        cpp: {
+            enabled: true,
+        },
+        java: {
+            enabled: true,
+        },
+    },
+    versions_with_info: [
+        {
+            version: "1",
+            imports: [],
+        },
+    ],
+    frozen: true,
+}
+
+aidl_interface {
     name: "vendor.oplus.hardware.oplusSensor",
     system_ext_specific: true,
     vendor_available: true,
@@ -550,6 +604,14 @@ aidl_interface {
             version: "3",
             imports: [],
         },
+        {
+            version: "4",
+            imports: [],
+        },
+        {
+            version: "5",
+            imports: [],
+        },
     ],
 }
 
@@ -602,6 +664,14 @@ aidl_interface {
         },
         {
             version: "2",
+            imports: [],
+        },
+        {
+            version: "3",
+            imports: [],
+        },
+        {
+            version: "4",
             imports: [],
         },
     ],
@@ -826,6 +896,39 @@ aidl_interface {
 }
 
 aidl_interface {
+    name: "vendor.oplus.hardware.subsys_radio-compat",
+    system_ext_specific: true,
+    odm_available: true,
+    local_include_dir: "aidl-compat",
+    srcs: ["aidl-compat/vendor/oplus/hardware/subsys_interface/subsys_radio/*.aidl"],
+    stability: "vintf",
+    owner: "oplus",
+
+    backend: {
+        cpp: {
+            enabled: true,
+        },
+        java: {
+            enabled: true,
+        },
+    },
+    imports: [
+        "vendor.oplus.hardware.subsys-V5",
+    ],
+    versions_with_info: [
+        {
+            version: "1",
+            imports: ["vendor.oplus.hardware.subsys-V5"],
+        },
+        {
+            version: "2",
+            imports: ["vendor.oplus.hardware.subsys-V5"],
+        },
+    ],
+    frozen: true,
+}
+
+aidl_interface {
     name: "vendor.oplus.hardware.touch",
     system_ext_specific: true,
     vendor_available: true,
@@ -955,4 +1058,26 @@ cc_library_shared {
     name: "vendor.oplus.hardware.sendextcamcmd-V1-ndk_platform",
     defaults: ["vendor.oplus.hardware.ndk_platform_shim_defaults"],
     whole_static_libs: ["vendor.oplus.hardware.sendextcamcmd-V1-ndk"],
+}
+
+cc_library_shared {
+    name: "vendor.oplus.hardware.subsys_radio-V1-ndk_compat",
+    stem: "vendor.oplus.hardware.subsys_radio-V1-ndk",
+    soc_specific: true,
+    shared_libs: [
+        "libbinder_ndk",
+        "vendor.oplus.hardware.subsys-V5-ndk",
+    ],
+    whole_static_libs: ["vendor.oplus.hardware.subsys_radio-compat-V1-ndk"],
+}
+
+cc_library_shared {
+    name: "vendor.oplus.hardware.subsys_radio-V2-ndk_compat",
+    stem: "vendor.oplus.hardware.subsys_radio-V2-ndk",
+    soc_specific: true,
+    shared_libs: [
+        "libbinder_ndk",
+        "vendor.oplus.hardware.subsys-V5-ndk",
+    ],
+    whole_static_libs: ["vendor.oplus.hardware.subsys_radio-compat-V2-ndk"],
 }

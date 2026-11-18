@@ -14,7 +14,7 @@ import struct
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from os import path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple
 
 from extract_utils.file import File, FileArgs, FileList
 from extract_utils.fixups_blob import BlobFixupCtx, blob_fixup
@@ -22,6 +22,7 @@ from extract_utils.module import ExtractUtilsModule, GeneratedProprietaryFile
 from extract_utils.postprocess import PostprocessCtx
 from extract_utils.utils import run_cmd_bytes
 
+CHARGER_COOL_DOWN_CONFIG = 'vendor/etc/charger_cool_down.conf'
 THERMAL_ENGINE_CONFIG = 'vendor/etc/thermal-engine.conf'
 THERMAL_CONTROL_CONFIG = (
     'odm/etc/temperature_profile/sys_thermal_control_config.xml'
@@ -41,23 +42,25 @@ SAMPLING_MS = 1000
 
 
 class StatusModel(NamedTuple):
-    up: List[int]
-    down: List[int]
-    status: List[int]
+    up: list[int]
+    down: list[int]
+    status: list[int]
 
 
 class ControlConfig(NamedTuple):
-    cpu_levels: Dict[int, List[int]]
-    gpu_levels: Dict[int, int]
+    cpu_levels: dict[int, list[int]]
+    gpu_levels: dict[int, int]
     # tempGear -> (cpu level, gpu level)
-    gears: Dict[int, Tuple[int, int]]
+    gears: dict[int, tuple[int, int]]
+    # tempGear -> charger cool down level
+    charge_levels: dict[int, int]
     clusters: int
 
 
 class Level(NamedTuple):
     temp: int
     clr: int
-    limits: List[int]
+    limits: list[int]
 
 
 def get_member(value: Any, *keys: str) -> Any:
@@ -68,14 +71,14 @@ def get_member(value: Any, *keys: str) -> Any:
     return value
 
 
-def parse_int(value: Optional[str], default: int = -1) -> int:
+def parse_int(value: str | None, default: int = -1) -> int:
     try:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
 
 
-def read_horae_config(horae_config_path: str) -> Dict[str, Any]:
+def read_horae_config(horae_config_path: str) -> dict[str, Any]:
     with open(horae_config_path, 'rb') as f:
         data = f.read()
 
@@ -104,12 +107,12 @@ def read_horae_config(horae_config_path: str) -> Dict[str, Any]:
 
     root = json.loads(plain[4 : 4 + length])
     if not isinstance(root, dict):
-        raise ValueError(f'Failed to parse {horae_config_path}')
+        raise TypeError(f'Failed to parse {horae_config_path}')
 
     return root
 
 
-def select_project(root: Dict[str, Any], project: Optional[str]):
+def select_project(root: dict[str, Any], project: str | None):
     if project and isinstance(root.get(project), dict):
         return root[project]
 
@@ -123,7 +126,7 @@ def select_project(root: Dict[str, Any], project: Optional[str]):
     return root
 
 
-def get_shell_sensors(project: Dict[str, Any]) -> List[str]:
+def get_shell_sensors(project: dict[str, Any]) -> list[str]:
     models = (
         get_member(project, 'shell_temp_fitting_model', 'default', 'temp_model')
         or {}
@@ -140,7 +143,7 @@ def get_shell_sensors(project: Dict[str, Any]) -> List[str]:
     )
 
 
-def parse_status_model(value: Any) -> Optional[StatusModel]:
+def parse_status_model(value: Any) -> StatusModel | None:
     if not isinstance(value, dict):
         return None
 
@@ -192,7 +195,7 @@ def read_control_config(control_config_path: str) -> ControlConfig:
     if root.tag != 'sys_thermal_control_list':
         raise ValueError(f'Failed to parse {control_config_path}')
 
-    config = ControlConfig({}, {}, {}, 0)
+    config = ControlConfig({}, {}, {}, {}, 0)
     clusters = 0
 
     for feature in root.iterfind('feature'):
@@ -217,10 +220,15 @@ def read_control_config(control_config_path: str) -> ControlConfig:
         policy = root.find('thermalPolicyConfigItem/default/common_config')
 
     for gear in policy.iterfind('gear_config') if policy is not None else []:
-        config.gears[parse_int(gear.get('tempGear'))] = (
+        temp_gear = parse_int(gear.get('tempGear'))
+        config.gears[temp_gear] = (
             parse_int(gear.get('cpu')),
             parse_int(gear.get('gpu')),
         )
+
+        charge_level = parse_int(gear.get('charge'))
+        if charge_level >= 0:
+            config.charge_levels[temp_gear] = charge_level
 
     if not config.gears:
         raise ValueError(
@@ -230,8 +238,8 @@ def read_control_config(control_config_path: str) -> ControlConfig:
     return config._replace(clusters=clusters)
 
 
-def build_levels(control: ControlConfig, model: StatusModel) -> List[Level]:
-    levels: List[Level] = []
+def build_levels(control: ControlConfig, model: StatusModel) -> list[Level]:
+    levels: list[Level] = []
     cpu_limits = [NO_LIMIT] * control.clusters
     gpu_limit = NO_LIMIT
 
@@ -261,7 +269,29 @@ def build_levels(control: ControlConfig, model: StatusModel) -> List[Level]:
     return levels
 
 
-def format_values(key: str, values: List[Any]) -> str:
+def build_charge_levels(
+    control: ControlConfig, model: StatusModel
+) -> list[Level]:
+    levels: list[Level] = []
+
+    for up, down, status in zip(model.up, model.down, model.status):
+        # Gears without a charge level keep the previous one.
+        level = control.charge_levels.get(status)
+        if level is None:
+            continue
+
+        if levels:
+            redundant = levels[-1].limits == [level]
+        else:
+            redundant = level == 0
+
+        if not redundant:
+            levels.append(Level(up * 1000, down * 1000, [level]))
+
+    return levels
+
+
+def format_values(key: str, values: list[Any]) -> str:
     return ' '.join([key, *map(str, values)])
 
 
@@ -269,12 +299,12 @@ def format_section(name: str, *lines: str) -> str:
     return f'[{name}]\n' + ''.join(f'{line}\n' for line in lines) + '\n'
 
 
-def generate_thermal_engine_config(
+def read_thermal_inputs(
     control_config_path: str,
     horae_config_path: str,
     horae_target_config_path: str,
-    project_name: Optional[str] = None,
-) -> str:
+    project_name: str | None = None,
+) -> tuple[ControlConfig, list[str], StatusModel]:
     control = read_control_config(control_config_path)
     horae = read_horae_config(horae_target_config_path)
 
@@ -294,6 +324,22 @@ def generate_thermal_engine_config(
     )
     if model is None:
         raise ValueError(f'No thermal_status_model in {horae_config_path}')
+
+    return control, sensors, model
+
+
+def generate_thermal_engine_config(
+    control_config_path: str,
+    horae_config_path: str,
+    horae_target_config_path: str,
+    project_name: str | None = None,
+) -> str:
+    control, sensors, model = read_thermal_inputs(
+        control_config_path,
+        horae_config_path,
+        horae_target_config_path,
+        project_name,
+    )
 
     levels = build_levels(control, model)
     if not levels:
@@ -342,6 +388,32 @@ def generate_thermal_engine_config(
     return config
 
 
+def generate_charger_cool_down_config(
+    control_config_path: str,
+    horae_config_path: str,
+    horae_target_config_path: str,
+    project_name: str | None = None,
+) -> str:
+    control, sensors, model = read_thermal_inputs(
+        control_config_path,
+        horae_config_path,
+        horae_target_config_path,
+        project_name,
+    )
+
+    levels = build_charge_levels(control, model)
+
+    return ''.join(
+        f'{line}\n'
+        for line in [
+            format_values('sensors', sensors),
+            format_values('thresholds', [level.temp for level in levels]),
+            format_values('thresholds_clr', [level.clr for level in levels]),
+            format_values('levels', [level.limits[0] for level in levels]),
+        ]
+    )
+
+
 def find_extracted_file(module: ExtractUtilsModule, file_dst: str) -> str:
     for proprietary_file in module.proprietary_files:
         for file in proprietary_file.file_list.all_files:
@@ -360,13 +432,15 @@ def find_extracted_file(module: ExtractUtilsModule, file_dst: str) -> str:
 
 def add_generated_thermal_engine_config(
     module: ExtractUtilsModule,
-    project_name: Optional[str] = None,
+    project_name: str | None = None,
     horae_target_config: str = HORAE_TARGET_CONFIG,
 ) -> GeneratedProprietaryFile:
     """
     Generate /vendor/etc/thermal-engine.conf out of the stock
     sys_thermal_control_config.xml gear CPU/GPU limits and horae shell
-    sensors, tripping on horae's thermal_status_model thresholds.
+    sensors, tripping on horae's thermal_status_model thresholds. The gear
+    charge levels go to /vendor/etc/charger_cool_down.conf the same way, for
+    the power HAL to apply while the device is interactive.
 
     The stock config is replaced by a blob fixup, its inputs are extracted
     for it and removed afterwards. An encrypted sys_thermal_control_config.xml
@@ -381,9 +455,38 @@ def add_generated_thermal_engine_config(
         file_list.add_from_lines(
             [
                 f'{THERMAL_CONTROL_CONFIG};EXTRACT_ONLY',
+                f'{THERMAL_CONTROL_CONFIG}:{CHARGER_COOL_DOWN_CONFIG}',
                 THERMAL_ENGINE_CONFIG,
             ]
         )
+
+    def decrypt_control_config_file(file_path: str):
+        with open(file_path, 'rb') as f:
+            data = f.read()
+
+        # Like stock, try decrypting first and keep the file as is otherwise.
+        with suppress(binascii.Error):
+            data = decrypt_control_config(data)
+            with open(file_path, 'wb') as f:
+                f.write(data)
+
+    def generate_charger_cool_down_fn(
+        ctx: BlobFixupCtx,
+        file: File,
+        file_path: str,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        decrypt_control_config_file(file_path)
+        config = generate_charger_cool_down_config(
+            file_path,
+            find_extracted_file(module, HORAE_CONFIG),
+            find_extracted_file(module, horae_target_config),
+            project_name,
+        )
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(config)
 
     def generate_fn(
         ctx: BlobFixupCtx,
@@ -410,18 +513,12 @@ def add_generated_thermal_engine_config(
         *args: Any,
         **kwargs: Any,
     ):
-        with open(file_path, 'rb') as f:
-            data = f.read()
-
-        # Like stock, try decrypting first and keep the file as is otherwise.
-        with suppress(binascii.Error):
-            data = decrypt_control_config(data)
-            with open(file_path, 'wb') as f:
-                f.write(data)
+        decrypt_control_config_file(file_path)
 
     # Run any device fixups on top of the generated and decrypted files
     for file_dst, fn in [
         (THERMAL_CONTROL_CONFIG, decrypt_fn),
+        (CHARGER_COOL_DOWN_CONFIG, generate_charger_cool_down_fn),
         (THERMAL_ENGINE_CONFIG, generate_fn),
     ]:
         fixup = blob_fixup().call(fn, need_tmp_dir=False)
